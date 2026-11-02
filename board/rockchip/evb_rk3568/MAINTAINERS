@@ -14,6 +14,7 @@ S:	Orphan
 F:	configs/bxi-ground-station-rk3566_defconfig
 F:	arch/arm/dts/rk3566-bxi-ground-station*
 F:	build-bxi-ground-station.sh
+F:	board/rockchip/evb_rk3568/bxi-ground-station.c
 
 EASEPI-R1
 M:	Liangbin Lian <jjm2473@gmail.com>

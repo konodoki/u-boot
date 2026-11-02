@@ -280,6 +280,66 @@ saveenv
 - U-Boot 升级后，旧的持久环境会继续覆盖编译默认值；需要新默认设置时，应先备份变量，再考虑恢复默认环境。
 - 如果更换不同擦除粒度的 NOR，需要确认上述 64 KiB 边界与芯片擦除粒度兼容。
 
+### 4.2 Recovery 按键（SARADC_IN0）
+
+本板 Recovery 按钮接 `SARADC_IN0`，按下时拉低，松开时由硬件上拉。
+U-Boot 设备树启用 `saradc@fe720000`，ADC 参考电压按 1.8 V 配置；
+该声明不会控制外部电源，硬件必须已经提供稳定的 ADC 参考电压。
+
+当前启用：
+
+```text
+CONFIG_ADC=y
+CONFIG_SARADC_ROCKCHIP=y
+CONFIG_CMD_ADC=y
+CONFIG_BXI_GROUND_STATION_RECOVERY=y
+CONFIG_USE_PREBOOT=y
+```
+
+开机在主 U-Boot 的 late-init 阶段检查通道 **0**，连续读取 3 次，间隔 5 ms。
+只有三次原始值都在 `0～30` 范围内，才认定按键按下；读取失败时会打印警告并继续正常启动。
+这里的 `30` 是 ADC 原始读数，不是 mV。实际按下值若超出阈值，需要测量后调整。
+
+```text
+未按下 Recovery → 按原有启动配置正常启动
+按住 Recovery 开机 → U-Boot RockUSB → 对外开放 eMMC 0
+```
+
+使用方法：
+
+1. 先将带此改动的新 `u-boot-rockchip-spi.bin` 烧录到 NOR。
+2. 使用 OTG USB 连接电脑，按住 Recovery，再上电或复位。
+3. 等待串口出现：
+
+   ```text
+   Recovery button held (SARADC_IN0): entering RockUSB on eMMC 0
+   ```
+
+4. 松开按键，在电脑端使用 RKDevTool 的按地址下载功能烧写 eMMC。
+   此时由 U-Boot 提供 RockUSB，**不用再下载 Boot/临时 Loader**。
+   U-Boot 的 RockUSB 不保证实现 RKDevTool 的所有扩展命令；不要据此假定“升级固件”或切换存储等功能都可用。
+
+恢复入口设置的是一次性的 RAM `preboot`，不会自动执行 `saveenv`。
+如果 USB 没有连接、初始化失败，或者通过串口 Ctrl+C 退出 RockUSB，自动启动被禁止，停留在 U-Boot 提示符。
+正常烧录完成后重启，或释放按键后重新上电，即可恢复原来的启动流程。
+**不要在这次恢复启动中随意执行 `saveenv`，否则临时的 `bootdelay=-1` 也会被保存。**
+
+本功能覆盖本板的默认通道 1 下载按键检查，不会跳入 Maskrom，
+不影响其他 RK3566/RK3568 板，也不修改官方配置的 RKDevTool Loader。
+它依赖 NOR 中的 U-Boot 成功运行，不能替代真正的 Maskrom 救砖。
+
+检查按键读数（在 U-Boot 提示符中，分别松开、按住按钮执行）：
+
+```text
+adc list
+adc info saradc@fe720000
+adc single saradc@fe720000 0
+```
+
+预期：松开值明显高于 30，按下值接近 0。如果松开也接近 0，先检查按键上拉、
+ADC 参考电源、接线及焊接；如果提示设备不存在或没有 `adc` 命令，确认板上已经更新为新固件。
+此处只在开机时检测，不是 Linux 运行期间的热按键处理，也没有额外启动 `recovery.img`。
+
 ## 5. 制作 eMMC 镜像前的准备
 
 eMMC 镜像制作脚本需要一个已经准备好的 rootfs 目录，例如：
@@ -457,9 +517,9 @@ $RKDEV rd
 
 执行 `rockusb 0 mmc 0` 后，U-Boot 会停留在 USB 下载模式，不会继续自动启动 Linux。完成烧录后用 `rkdeveloptool rd` 重启即可。
 
-### 7.2 不能启动 SPI NOR 时：才使用 Maskrom + Loader
+### 7.2 无法使用 U-Boot RockUSB 时：使用 Maskrom + Loader
 
-如果 SPI NOR 中的 U-Boot 损坏、DDR 初始化失败、USB RockUSB 没有起来，才使用：
+如果 SPI NOR 中的 U-Boot 损坏、DDR 初始化失败，或 U-Boot RockUSB 不可用，可以通过 Maskrom 下载临时 Loader：
 
 ```text
 Maskrom
@@ -470,6 +530,54 @@ rkdeveloptool wl 0x0 emmc-bxi-ground-station.img
 ```
 
 这里的 Loader 只是临时下载到 RAM 中运行，并不会被集成到 SPI NOR 的 U-Boot 镜像中。
+
+### 7.3 从 U-Boot 软件进入 Maskrom（本板已实测成功）
+
+**本方法已在 bxi-ground-station RK3566 实板验证成功。**
+适用于 NOR 中的 U-Boot 仍能正常启动，但需要进入真正的 Maskrom 模式的情况；
+不需要擦除 NOR，也不需要短接启动存储器信号。
+
+连接电脑与板子的 OTG USB，在 **U-Boot 串口提示符**中依次执行：
+
+```text
+mw.l 0xfdc20200 0xef08a53c 1
+reset
+```
+
+含义：
+
+| 项目 | 说明 |
+|---|---|
+| `0xfdc20200` | 本工程 RK3566/RK3568 的启动模式寄存器地址 |
+| `0xef08a53c` | BootROM 下载标志 `BOOT_BROM_DOWNLOAD` |
+| `mw.l ... 1` | 向该寄存器写入一个 32 位值 |
+| `reset` | 随即软件复位，让 BootROM 处理下载标志 |
+
+复位后，在 Windows RKDevTool 中确认发现 **MASKROM** 设备。
+Ubuntu 可以执行 `rkdeveloptool ld` 查看设备模式。
+确认进入 Maskrom 后，再按需要下载官方配置的临时 Loader。
+**进入 Maskrom 本身不代表已经选定烧录 NOR 或 eMMC；后续写入前仍须确认目标存储。**
+
+注意：
+
+- 写入标志后直接执行 `reset`，不要先断电，也不要在两条命令之间执行其他启动流程。
+- 这是启动模式寄存器写入，不是 Flash 擦写；不修改环境变量，不需要执行 `saveenv`。
+- 此处地址与标志针对当前 RK3566 工程，不应未经核对就用于其他型号。
+- 本方法依赖 U-Boot 能运行并接收命令；若 NOR 固件或 DDR 初始化已经损坏，仍需要板级硬件 Maskrom 入口。
+- 若原来的短接方法只干扰 eMMC，而 NOR 中已有可启动固件，板子仍可能从 NOR 启动。
+  不能据此认定 Maskrom 被禁用；应根据原理图确认短接焊盘实际连接的信号，不要随意短接其他引脚。
+
+与前面的恢复入口区分：
+
+```text
+按住 Recovery（SARADC_IN0）开机
+    → 本板 U-Boot 执行 rockusb 0 mmc 0
+    → U-Boot 提供 eMMC 烧录接口，不是 Maskrom，不需要再下载 Boot
+
+在 U-Boot 执行上面的 mw.l + reset
+    → 真正进入 BootROM Maskrom
+    → 需要继续烧录时，先下载临时 Loader
+```
 
 ## 8. Windows RKDevTool 烧录 eMMC
 

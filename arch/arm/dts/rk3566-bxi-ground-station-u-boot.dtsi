@@ -8,3 +8,9 @@
 		bootph-some-ram;
 	};
 };
+
+&saradc {
+	/* ADC reference is the board's already-powered 1.8 V analog supply. */
+	vdd-microvolts = <1800000>;
+	status = "okay";
+};

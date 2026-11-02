@@ -9,4 +9,14 @@ config SYS_VENDOR
 config SYS_CONFIG_NAME
 	default "evb_rk3568"
 
+config BXI_GROUND_STATION_RECOVERY
+	bool "BXI Ground Station SARADC_IN0 recovery key"
+	depends on ADC && SARADC_ROCKCHIP && CMD_ROCKUSB
+	select USE_PREBOOT
+	help
+	  Check the active-low recovery button on SARADC_IN0 at boot.
+	  Enter RockUSB for eMMC 0 when held instead of returning to Maskrom.
+	  This overrides the common Rockchip channel-1 download key check
+	  and is intended only for the BXI Ground Station RK3566 board.
+
 endif
