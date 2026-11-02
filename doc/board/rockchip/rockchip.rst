@@ -111,6 +111,7 @@ List of mainline supported Rockchip boards:
 
 * rk3566
      - Anbernic RGxx3 (anbernic-rgxx3-rk3566)
+     - BXI Ground Station (bxi-ground-station-rk3566)
      - FriendlyElec NanoPi R3S (nanopi-r3s-rk3566)
      - Hardkernel ODROID-M1S (odroid-m1s-rk3566)
      - LCKFB TaishanPi (lckfb-tspi-rk3566)

@@ -9,6 +9,12 @@ S:	Maintained
 F:	configs/bpi-r2-pro-rk3568_defconfig
 F:	arch/arm/dts/rk3568-bpi-r2-pro*
 
+BXI-GROUND-STATION-RK3566
+S:	Orphan
+F:	configs/bxi-ground-station-rk3566_defconfig
+F:	arch/arm/dts/rk3566-bxi-ground-station*
+F:	build-bxi-ground-station.sh
+
 EASEPI-R1
 M:	Liangbin Lian <jjm2473@gmail.com>
 S:	Maintained
