@@ -14,7 +14,7 @@ TEE_SOURCE=${TEE:-}
 TEE_LOAD_ADDR=${TEE_LOAD_ADDR:-0x08400000}
 SPI_NOR_SIZE=${SPI_NOR_SIZE:-0x400000}
 LUBANCAT_UBOOT_DIR=${LUBANCAT_UBOOT_DIR:-"$(dirname "$SCRIPT_DIR")/LubanCat_SDK/u-boot"}
-USBPLUG_BUILD_DIR=${USBPLUG_BUILD_DIR:-"$SCRIPT_DIR/build/rk3568-usbplug-24mhz-slim"}
+USBPLUG_BUILD_DIR=${USBPLUG_BUILD_DIR:-"$SCRIPT_DIR/build/rk3568-usbplug-official"}
 
 CLEAN=0
 WITH_TEE=1
@@ -34,8 +34,8 @@ Options:
       --tee FILE    Use an explicit OP-TEE/BL32 image instead of rkbin
       --no-tee      Build without OP-TEE
       --rkdevtool-loader
-                    Also build a slim RKDevTool Loader whose USBPlug keeps
-                    eMMC fallback and uses 24 MHz single-I/O for SPI NOR
+                    Also build the official RKDevTool Loader using the
+                    vendor rk3568-usbplug.config without local modifications
   -h, --help        Show this help
 
 Environment overrides:
@@ -144,17 +144,6 @@ PACKAGES
 fi
 
 if ((BUILD_RKDEVTOOL_LOADER)); then
-	missing_loader=()
-	for command in fdtget fdtput truncate; do
-		if ! command -v "$command" >/dev/null 2>&1; then
-			missing_loader+=("$command")
-		fi
-	done
-	if ((${#missing_loader[@]})); then
-		echo "error: missing RKDevTool Loader commands: ${missing_loader[*]}" >&2
-		echo "       On Ubuntu install device-tree-compiler and coreutils." >&2
-		exit 1
-	fi
 	if [[ ! -f $LUBANCAT_UBOOT_DIR/configs/rockchip-usbplug_defconfig ||
 	      ! -f $LUBANCAT_UBOOT_DIR/configs/rk3568-usbplug.config ]]; then
 		echo "error: LubanCat vendor U-Boot was not found at:" >&2
@@ -313,7 +302,7 @@ make -C "$SCRIPT_DIR" \
 
 if ((BUILD_RKDEVTOOL_LOADER)); then
 	echo
-	echo "==> Building RKDevTool USBPlug (24 MHz, single-I/O)"
+	echo "==> Building official RKDevTool USBPlug"
 
 	RKDEVTOOL_DDR=$(pick_firmware \
 		"${RKDEVTOOL_DDR:-}" \
@@ -333,62 +322,13 @@ if ((BUILD_RKDEVTOOL_LOADER)); then
 		exit 1
 	fi
 
+	# Start from the vendor's official USBPlug configuration.  Do not alter
+	# .config or dt.dtb here: the Loader must remain the official build.
 	mkdir -p "$USBPLUG_BUILD_DIR"
 	make -C "$LUBANCAT_UBOOT_DIR" \
 		O="$USBPLUG_BUILD_DIR" \
 		CROSS_COMPILE="$CROSS_COMPILE" \
 		rockchip-usbplug_defconfig rk3568-usbplug.config
-
-	python3 - "$USBPLUG_BUILD_DIR/.config" <<'PY'
-from pathlib import Path
-import sys
-
-config = Path(sys.argv[1])
-lines = config.read_text().splitlines()
-
-# Keep USB RockUSB, eMMC fallback and SPI NOR, but remove NAND drivers which
-# make the CODE472 USBPlug larger than the early loader's practical limit.
-disable = {
-    'CMD_BOOTI',
-    'MTD_NAND_BBT_USING_FLASH', 'MTD_NAND_CORE', 'MTD_SPI_NAND',
-    'SPI_NAND_GIGADEVICE', 'SPI_NAND_MACRONIX', 'SPI_NAND_MICRON',
-    'SPI_NAND_TOSHIBA', 'SPI_NAND_WINBOND',
-    'SPI_NAND_WINBOND_CONT_READ', 'SPI_NAND_DOSILICON',
-    'SPI_NAND_ESMT', 'SPI_NAND_XINCUN', 'SPI_NAND_XTX',
-    'SPI_NAND_HYF', 'SPI_NAND_FMSH', 'SPI_NAND_FORESEE',
-    'SPI_NAND_BIWIN', 'SPI_NAND_ETRON', 'SPI_NAND_JSC',
-    'SPI_NAND_SILICONGO', 'SPI_NAND_UNIM', 'SPI_NAND_SKYHIGH',
-    'SPI_NAND_GSTO', 'SPI_NAND_ZBIT', 'SPI_NAND_HIKSEMI',
-    'PHY_ROCKCHIP_NANENG_COMBOPHY',
-}
-
-seen = set()
-output = []
-for line in lines:
-    symbol = None
-    if line.startswith('CONFIG_'):
-        symbol = line.split('=', 1)[0][7:]
-    elif line.startswith('# CONFIG_') and line.endswith(' is not set'):
-        symbol = line[9:-11]
-
-    if symbol in disable:
-        if symbol not in seen:
-            output.append(f'# CONFIG_{symbol} is not set')
-            seen.add(symbol)
-    elif symbol == 'SF_DEFAULT_SPEED':
-        if symbol not in seen:
-            output.append('CONFIG_SF_DEFAULT_SPEED=24000000')
-            seen.add(symbol)
-    else:
-        output.append(line)
-
-for symbol in sorted(disable - seen):
-    output.append(f'# CONFIG_{symbol} is not set')
-if 'SF_DEFAULT_SPEED' not in seen:
-    output.append('CONFIG_SF_DEFAULT_SPEED=24000000')
-
-config.write_text('\n'.join(output) + '\n')
-PY
 	make -C "$LUBANCAT_UBOOT_DIR" \
 		O="$USBPLUG_BUILD_DIR" \
 		CROSS_COMPILE="$CROSS_COMPILE" \
@@ -398,21 +338,9 @@ PY
 		CROSS_COMPILE="$CROSS_COMPILE" \
 		-j"$JOBS" usbplug.bin
 
-	USBPLUG_DTB="$USBPLUG_BUILD_DIR/dts/dt-24mhz-x1.dtb"
-	cp "$USBPLUG_BUILD_DIR/dts/dt.dtb" "$USBPLUG_DTB"
-	for node in /sfc@fe300000/flash@0 /sfc@fe300000/flash@1; do
-		fdtput -t i "$USBPLUG_DTB" "$node" spi-max-frequency 24000000
-		fdtput -t i "$USBPLUG_DTB" "$node" spi-rx-bus-width 1
-		fdtput -t i "$USBPLUG_DTB" "$node" spi-tx-bus-width 1
-	done
-
-	USBPLUG_IMAGE="$USBPLUG_BUILD_DIR/usbplug-24MHz-x1-slim.bin"
-	cat "$USBPLUG_BUILD_DIR/u-boot-nodtb.bin" "$USBPLUG_DTB" > "$USBPLUG_IMAGE"
-	usbplug_size=$(stat -c '%s' "$USBPLUG_IMAGE")
-	truncate -s "$(((usbplug_size + 3) / 4 * 4))" "$USBPLUG_IMAGE"
-	usbplug_size=$(stat -c '%s' "$USBPLUG_IMAGE")
-	if ((usbplug_size > 0x40000)); then
-		echo "error: USBPlug is larger than 256 KiB: $usbplug_size bytes" >&2
+	USBPLUG_IMAGE="$USBPLUG_BUILD_DIR/usbplug.bin"
+	if [[ ! -f $USBPLUG_IMAGE ]]; then
+		echo "error: official USBPlug was not generated: $USBPLUG_IMAGE" >&2
 		exit 1
 	fi
 
@@ -421,8 +349,8 @@ PY
 	cp "$BOOT_MERGER" "$PACK_DIR/boot_merger"
 	chmod +x "$PACK_DIR/boot_merger"
 
-	RKDEVTOOL_LOADER="$OUTPUT_DIR/rk356x_loader_v1.26.114_usbplug-24MHz-x1-slim.bin"
-	cat > "$PACK_DIR/RK3566MINIALL-USBPLUG-24MHZ-X1-SLIM.ini" <<EOF
+	RKDEVTOOL_LOADER="$OUTPUT_DIR/rk356x_loader_v1.26.114.bin"
+	cat > "$PACK_DIR/RK3566MINIALL-OFFICIAL.ini" <<EOF
 [CHIP_NAME]
 NAME=RK3568
 [VERSION]
@@ -452,41 +380,83 @@ EOF
 
 	(
 		cd "$PACK_DIR"
-		./boot_merger ./RK3566MINIALL-USBPLUG-24MHZ-X1-SLIM.ini
+		./boot_merger ./RK3566MINIALL-OFFICIAL.ini
 	)
 
 	if [[ ! -f $RKDEVTOOL_LOADER ]]; then
-		echo "error: RKDevTool Loader was not generated" >&2
+		echo "error: official RKDevTool Loader was not generated" >&2
 		exit 1
 	fi
+
+	printf '    Official USBPlug:          %s (%s bytes)\n' \
+		"$USBPLUG_IMAGE" "$(stat -c '%s' "$USBPLUG_IMAGE")"
+	printf '    Official RKDevTool Loader: %s (%s bytes)\n' \
+		"$RKDEVTOOL_LOADER" "$(stat -c '%s' "$RKDEVTOOL_LOADER")"
 fi
 
 SPI_IMAGE="$OUTPUT_DIR/u-boot-rockchip-spi.bin"
 if [[ -f $SPI_IMAGE ]]; then
-	spi_image_size=$(stat -c '%s' "$SPI_IMAGE")
-	spi_capacity=$((SPI_NOR_SIZE))
-	if ((spi_image_size > spi_capacity)); then
-		echo "error: SPI image is larger than the SPI NOR capacity" >&2
-		echo "       image: $spi_image_size bytes" >&2
-		echo "       flash: $spi_capacity bytes" >&2
-		exit 1
-	fi
-	spi_free=$((spi_capacity - spi_image_size))
+	# Keep SPI firmware and both persistent environment erase regions apart.
+	# Read the generated config so validation follows the board's real layout.
+	python3 - "$OUTPUT_DIR/.config" "$SPI_IMAGE" "$SPI_NOR_SIZE" <<'PY_SPI_LAYOUT'
+from pathlib import Path
+import sys
+
+config_path, image_path, capacity = sys.argv[1:]
+config = dict(line.split('=', 1) for line in Path(config_path).read_text().splitlines()
+              if line.startswith('CONFIG_') and '=' in line)
+capacity = int(capacity, 0)
+image_size = Path(image_path).stat().st_size
+
+
+def fail(message):
+    sys.exit(f'error: invalid SPI NOR layout: {message}')
+
+
+if config.get('CONFIG_ENV_IS_IN_SPI_FLASH') != 'y':
+    fail('SPI flash environment is not enabled')
+if config.get('CONFIG_ENV_REDUNDANT') != 'y':
+    fail('redundant environment is not enabled')
+
+try:
+    size = int(config['CONFIG_ENV_SIZE'], 0)
+    sector = int(config['CONFIG_ENV_SECT_SIZE'], 0)
+    offsets = [int(config[name], 0) for name in
+               ('CONFIG_ENV_OFFSET', 'CONFIG_ENV_OFFSET_REDUND')]
+except (KeyError, ValueError) as exc:
+    fail(f'missing or invalid environment configuration: {exc}')
+
+if size <= 0 or sector <= 0:
+    fail('environment and sector sizes must be positive')
+erase_size = (size + sector - 1) // sector * sector
+for offset in offsets:
+    if offset < 0 or offset % sector:
+        fail(f'environment offset {offset:#x} is not sector-aligned')
+    if offset + erase_size > capacity:
+        fail(f'environment at {offset:#x} exceeds flash capacity {capacity:#x}')
+if abs(offsets[1] - offsets[0]) < erase_size:
+    fail('the two environment erase regions overlap')
+firmware_limit = min(offsets)
+if image_size > firmware_limit:
+    fail(f'firmware is {image_size} bytes, but must not exceed '
+         f'{firmware_limit:#x}; it would overwrite the environment')
+
+print(f'    SPI firmware: {image_size} bytes; limit: {firmware_limit:#x}')
+print(f'    Environment:  {size:#x} bytes each at '
+      f'{offsets[0]:#x} and {offsets[1]:#x}')
+print(f'    Free before environment: {firmware_limit - image_size} bytes')
+PY_SPI_LAYOUT
 fi
 
 echo
 echo "==> Build complete"
-if [[ -n ${spi_free:-} ]]; then
-	printf '    SPI NOR free after image: %d bytes (%.2f MiB)\n' \
-		"$spi_free" "$(awk "BEGIN { print $spi_free / 1048576 }")"
-fi
 for image in \
 	u-boot-rockchip.bin \
 	u-boot-rockchip-spi.bin \
 	idbloader.img \
 	u-boot.itb \
 	tee.bin \
-	rk356x_loader_v1.26.114_usbplug-24MHz-x1-slim.bin; do
+	rk356x_loader_v1.26.114.bin; do
 	if [[ -f $OUTPUT_DIR/$image ]]; then
 		printf '    %-28s %s\n' "$image" "$(du -h "$OUTPUT_DIR/$image" | cut -f1)"
 	fi
